@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# рабочие и временные листы, которые создают инструменты
+_fig*.mcdx
+_figures.mcdx
+*.tmp.mcdx

@@ -1,0 +1,22 @@
+[project]
+name = "mathcad-prime-mcp"
+version = "0.1.0"
+description = "MCP server exposing PTC Mathcad Prime's Automation API (open worksheets, set inputs, read outputs, save)"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=2.0.0",
+    "pywin32>=306",
+    "psutil>=5.9",
+    "pywinauto>=0.6.8",
+    "pillow>=10.0",
+]
+
+[project.scripts]
+mathcad-prime-mcp = "mathcad_prime_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mathcad_prime_mcp"]
