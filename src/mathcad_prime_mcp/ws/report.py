@@ -225,9 +225,43 @@ def parse_front_matter(text: str) -> tuple[dict, str]:
 
 
 IMG_RE = re.compile(r"^!\[(.*?)\]\((.+?)\)\s*$")
+PLACEHOLDER = re.compile(r"\{\{\s*([^}:\s]+)\s*(?::\s*(\d+)\s*)?\}\}")
 
 
-def render(source: str, out_docx: str, base_dir: str = "") -> str:
+def ru(x, decimals=None) -> str:
+    """Число в русской записи: запятая вместо точки."""
+    if isinstance(x, str):
+        return x
+    if decimals is not None:
+        s = "%.*f" % (decimals, x)
+    elif isinstance(x, int) or float(x).is_integer():
+        s = "%d" % round(x)
+    else:
+        s = "%.6g" % x
+    return s.replace(".", ",")
+
+
+def substitute(text: str, values: dict) -> tuple[str, list]:
+    """{{sk}} и {{sk:1}} -> значения из рассчитанного листа."""
+    missing = []
+
+    def repl(m):
+        name, dec = m.group(1), m.group(2)
+        if name not in values:
+            missing.append(name)
+            return m.group(0)
+        return ru(values[name], int(dec) if dec else None)
+
+    return PLACEHOLDER.sub(repl, text), missing
+
+
+def render(source: str, out_docx: str, base_dir: str = "", values: dict | None = None) -> str:
+    if values:
+        source, missing = substitute(source, values)
+        if missing:
+            raise KeyError("в листе нет значений для: %s. Подставляются только "
+                           "переменные, которые выведены в листе через 'имя='"
+                           % ", ".join(sorted(set(missing))))
     fm, text = parse_front_matter(source)
     base_dir = base_dir or os.path.dirname(os.path.abspath(out_docx))
 

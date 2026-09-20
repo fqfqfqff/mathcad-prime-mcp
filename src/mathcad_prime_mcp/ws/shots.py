@@ -292,12 +292,12 @@ def capture_best(win, out_path: str, pid: int = 0, max_pages: int = 8,
     return out_path
 
 
-PAPER_W = 793.7          # A4 width in worksheet units
+PAPER_W = {"A4": 793.7, "A3": 1122.5}   # ширина листа в единицах worksheet
 LEFT_MARGIN = 94.0       # printable area offset inside the sheet
 TOP_MARGIN = 69.0
 
 
-def sheet_rect(img):
+def sheet_rect(img, paper: str = "A4"):
     """(left, right, paper_top, scale) of the page sheet in the screenshot."""
     left, right = find_sheet(img)
     px = img.convert("RGB").load()
@@ -308,12 +308,12 @@ def sheet_rect(img):
         if r > SHEET_MIN and g > SHEET_MIN and b > SHEET_MIN:
             paper_top = y
             break
-    return left, right, paper_top, (right - left) / PAPER_W
+    return left, right, paper_top, (right - left) / PAPER_W.get(paper, PAPER_W["A4"])
 
 
 def capture_region(win, out_path: str, top: float, left: float,
                    width: float, height: float, pid: int = 0,
-                   settle: float = 1.2) -> str | None:
+                   settle: float = 1.2, paper: str = "A4") -> str | None:
     """Crop one region by its worksheet coordinates, with the view at the top.
 
     Deterministic: the sheet is located by colour, which fixes the scale and
@@ -322,19 +322,19 @@ def capture_region(win, out_path: str, top: float, left: float,
     if pid:
         ensure_focus(win, pid)
     img = _pil(win)
-    l, _r, paper_top, scale = sheet_rect(img)
+    l, _r, paper_top, scale = sheet_rect(img, paper)
     focus_canvas(win, l)
     win.type_keys("^{HOME}")
     time.sleep(settle)
 
     img = _pil(win)
-    l, r, paper_top, scale = sheet_rect(img)
+    l, r, paper_top, scale = sheet_rect(img, paper)
     x0 = int(l + (LEFT_MARGIN + left) * scale) - PAD
     y0 = int(paper_top + (TOP_MARGIN + top) * scale) - PAD
     x1 = int(x0 + width * scale) + 3 * PAD
     y1 = int(y0 + height * scale) + 3 * PAD
     x0, y0 = max(0, x0), max(0, y0)
-    x1, y1 = min(img.size[0], x1), min(img.size[1], y1)
+    x1, y1 = min(img.size[0], x1), min(img.size[1] - 45, y1)   # не захватывать статусбар
     if x1 - x0 < 60 or y1 - y0 < 60:
         return None
 

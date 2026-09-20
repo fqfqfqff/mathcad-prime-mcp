@@ -230,6 +230,23 @@ def inspect(path: str) -> dict:
             "errors": errors, "warnings": warnings, "calculated": calculated}
 
 
+def measured_values(path: str) -> dict:
+    """Значения math-регионов в порядке документа, ключи те же, что у
+    measured_sizes."""
+    ws_xml = read_part(path, WORKSHEET)
+    res_xml = read_part(path, RESULTS)
+    if ws_xml is None or res_xml is None:
+        return {}
+    res = _parse_results(res_xml)
+    out, idx = {}, 0
+    for r in _parse_worksheet(ws_xml):
+        if r["kind"] != "math":
+            continue
+        out[idx] = res.get(r["ref"], {}).get("value")
+        idx += 1
+    return out
+
+
 def measured_sizes(path: str) -> dict:
     """Prime's own rendered size of each math region, in document order.
 

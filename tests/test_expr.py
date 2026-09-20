@@ -152,3 +152,52 @@ def test_error_message_is_extracted_despite_namespace():
     err = _parse_results(xml)[0]["errors"][0]
     assert err["text"] == "Эта переменная не определена."
     assert err["code"] == "bad%_variable"
+
+
+def test_long_row_wraps_instead_of_running_off_the_page():
+    """Шесть широких регионов в ряду должны лечь в две строки."""
+    row = " ; ".join("переменная%d= " % i for i in range(6))
+    _, man, _ = doc.build_worksheet(row)
+    tops = sorted({m["top"] for m in man if m["kind"] == "math"})
+    assert len(tops) > 1, "ряд не перенёсся"
+    for m in man:
+        if m["kind"] == "math":
+            assert m["left"] + m["width"] <= doc.PRINT_W + doc.LEFT0 + 1
+
+
+def test_a3_is_wider_than_a4():
+    assert doc.printable_width("A3") > doc.printable_width("A4")
+    _, man, _ = doc.build_worksheet("a := 1\n@plot x=n y=a\n", figure_of=1, paper="A3")
+    plot = [m for m in man if m.get("figure")][0]
+    assert plot["width"] > doc.PRINT_W
+
+
+def test_figure_worksheet_drops_file_writes():
+    """Пересчёт листа для картинки не должен перезаписывать файлы работы."""
+    src = 'a := 1 ; WRITEPRN("VF1",a)=\n@plot x=n y=a\n'
+    _, man, _ = doc.build_worksheet(src, figure_of=1)
+    assert not any("WRITEPRN" in m["src"] for m in man)
+    _, man_full, _ = doc.build_worksheet(src)
+    assert any("WRITEPRN" in m["src"] for m in man_full)
+
+
+def test_exponential_values_get_extra_width():
+    from mathcad_prime_mcp.tools_ws import _renders_exponential
+    # 6.554*10^4 рисуется шире, чем сообщает Prime, из-за степени
+    assert _renders_exponential(65536)
+    assert _renders_exponential(0.0001)
+    assert not _renders_exponential(183.909)
+    assert not _renders_exponential("текст")
+
+
+def test_report_substitutes_values_with_russian_comma():
+    from mathcad_prime_mcp.ws.report import substitute
+    text, missing = substitute("порог {{h:1}}, длина {{L}}", {"h": 459.771, "L": 44100})
+    assert text == "порог 459,8, длина 44100"
+    assert not missing
+
+
+def test_report_reports_unknown_placeholders():
+    from mathcad_prime_mcp.ws.report import substitute
+    _, missing = substitute("{{нетути}}", {"h": 1})
+    assert missing == ["нетути"]

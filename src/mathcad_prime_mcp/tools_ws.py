@@ -27,6 +27,38 @@ SOURCE_HELP = """Формат исходника (строка = ряд реги
 разрываются границей страницы."""
 
 
+# Prime сообщает ширину региона без выступающей надстрочной степени: значение
+# вида 6.554·10^4 рисуется шире, чем actualWidth, и наезжает на соседа справа
+WIDTH_PAD = 12.0
+WIDTH_PAD_SCI = 42.0
+
+
+def _renders_exponential(value) -> bool:
+    if not isinstance(value, (int, float)):
+        return False
+    a = abs(value)
+    return a >= 1000 or (0 < a < 0.001)
+
+
+def _padded_sizes(path: str) -> dict:
+    sizes = results.measured_sizes(path)
+    values = results.measured_values(path)
+    return {i: (w + (WIDTH_PAD_SCI if _renders_exponential(values.get(i)) else WIDTH_PAD), h)
+            for i, (w, h) in sizes.items()}
+
+
+def _paper_part(paper: str) -> dict:
+    """Лист для картинок печатается на A3: тот же масштаб, но больше пикселей."""
+    import zipfile
+
+    from .ws.pack import TEMPLATE
+    if paper == "A4":
+        return {}
+    name = "mathcad/settings/presentation.xml"
+    pres = zipfile.ZipFile(TEMPLATE).read(name).decode("utf-8-sig")
+    return {name: pres.replace('paper-code="A4"', 'paper-code="%s"' % paper).encode("utf-8")}
+
+
 def _read_source(source: str) -> str:
     """Accept either the source text itself or a path to a .mcd file."""
     if "\n" not in source and source.lower().endswith(".mcd") and os.path.exists(source):
@@ -65,7 +97,7 @@ def register(mcp, get_app):
 
         drive.calculate(app, path)
         if tidy:
-            sizes = results.measured_sizes(path)
+            sizes = _padded_sizes(path)
             if sizes:
                 xml, manifest, extra = doc.build_worksheet(text, measured=sizes)
                 drive.close_if_open(app, path)
@@ -111,7 +143,7 @@ def register(mcp, get_app):
 
     @mcp.tool()
     def mathcad_report(source: str, out_docx: str, pdf: bool = False,
-                       base_dir: str = "") -> dict:
+                       base_dir: str = "", values_from: str = "") -> dict:
         """Собрать отчёт по лабораторной из markdown в .docx по ГОСТ.
 
         Times New Roman 14, полуторный интервал, поля 30/15/20/20 мм,
@@ -122,6 +154,12 @@ def register(mcp, get_app):
 
         source это текст или путь к .md. Пути картинок считаются от base_dir
         (по умолчанию папка отчёта).
+
+        values_from это путь к рассчитанному .mcdx: тогда в тексте работают
+        подстановки `{{sk}}` и `{{sk:1}}` (число знаков после запятой), числа
+        берутся прямо из листа и пишутся через запятую. Так значения в отчёте
+        не разъезжаются с документом. Подставляются переменные, выведенные в
+        листе через `имя=`.
         """
         from .ws import report
 
@@ -131,7 +169,14 @@ def register(mcp, get_app):
                 text = fh.read()
             base_dir = base_dir or os.path.dirname(os.path.abspath(source))
 
-        path = report.render(text, out_docx, base_dir=base_dir)
+        values = {}
+        if values_from:
+            for row in results.inspect(values_from)["rows"]:
+                name = str(row.get("text", "")).strip()
+                if name.endswith("=") and isinstance(row.get("value"), (int, float)):
+                    values[name[:-1].strip()] = row["value"]
+
+        path = report.render(text, out_docx, base_dir=base_dir, values=values)
         out = {"docx": path}
         if pdf:
             out["pdf"] = report.to_pdf(path)
@@ -191,7 +236,7 @@ def register(mcp, get_app):
 
     @mcp.tool()
     def mathcad_figures(source: str, out_dir: str, work_dir: str = "",
-                        zoom_clicks: int = 0) -> dict:
+                        zoom_clicks: int = 0, paper: str = "A3") -> dict:
         """Сделать картинки для отчёта: расчётная часть и каждый график
         отдельным png, обрезанным по содержимому.
 
@@ -234,14 +279,16 @@ def register(mcp, get_app):
                 time.sleep(1.0)
             raise RuntimeError("окно Mathcad Prime не найдено")
 
+        paper_part = _paper_part(paper)
         files, notes, made = [], [], []
         zoomed = False
         for idx in range(0, n_plots + 1):
-            xml, man, extra = doc.build_worksheet(text, figure_of=idx)
+            xml, man, extra = doc.build_worksheet(text, figure_of=idx, paper=paper)
             spot = next((m for m in man if m.get("figure")), None)
             wpath = os.path.join(work_dir, "_fig%d.mcdx" % idx)
             drive.close_if_open(app, wpath)
-            pack.write_mcdx(xml, wpath, parts=extra["parts"], rels=extra["rels"])
+            pack.write_mcdx(xml, wpath, parts=dict(extra["parts"], **paper_part),
+                            rels=extra["rels"])
             ws = drive.calculate(app, wpath)
             try:
                 ws.Activate()
@@ -280,7 +327,8 @@ def register(mcp, get_app):
                 got = shots.capture_view(win, out_png)
             elif spot:
                 got = shots.capture_region(win, out_png, spot["top"], spot["left"],
-                                           spot["width"], spot["height"], pid=pid)
+                                           spot["width"], spot["height"], pid=pid,
+                                           paper=paper)
             else:
                 got = shots.capture_best(win, out_png, pid=pid)
             if got:

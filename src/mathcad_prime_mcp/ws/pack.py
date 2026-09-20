@@ -34,10 +34,15 @@ def write_mcdx(worksheet_xml: str, dst: str, template: str = TEMPLATE,
     src = zipfile.ZipFile(template)
     names = src.namelist()
     os.makedirs(os.path.dirname(os.path.abspath(dst)) or ".", exist_ok=True)
+    parts = dict(parts or {})
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as out:
         for name in names:
-            if name == WORKSHEET:
+            if name in parts:
+                # переданная часть заменяет шаблонную, а не дублирует её:
+                # два элемента с одним именем ломают пакет
+                out.writestr(name, parts.pop(name))
+            elif name == WORKSHEET:
                 out.writestr(name, worksheet_xml.encode("utf-8"))
             elif name == CONTENT_TYPES and parts:
                 ct = src.read(name).decode("utf-8-sig")
@@ -46,7 +51,7 @@ def write_mcdx(worksheet_xml: str, dst: str, template: str = TEMPLATE,
                 out.writestr(name, ct.encode("utf-8"))
             else:
                 out.writestr(name, src.read(name))
-        for name, data in (parts or {}).items():
+        for name, data in parts.items():      # то, чего в шаблоне не было
             out.writestr(name, data)
         if rels:
             body = "".join(_REL % (target, rid) for rid, target in rels)

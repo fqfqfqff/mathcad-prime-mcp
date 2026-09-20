@@ -29,6 +29,9 @@ COL_GAP = 30.0
 ROW_GAP = 34.0
 PAGE_MARGIN = 12.0      # keep this far away from a page boundary
 BASE_H = 25.6           # height of a plain one-line formula
+# Сколько единиц документа видно в окне Prime при Ctrl+Home: график для
+# картинки должен целиком помещаться в этот просвет, иначе его срежет краем
+VISIBLE_H = 720.0
 
 COLORS = {
     "navy": "#FF00008B", "darkblue": "#FF00008B", "blue": "#FF0000FF",
@@ -235,6 +238,16 @@ def _place(top: float, height: float) -> float:
 
 
 PRINT_W = 636.0         # usable width of an A4 page, in worksheet units
+# A3 шире A4 на 328.8 единицы; листы для картинок печатаются на A3, чтобы
+# график занимал больше пикселей при том же масштабе Prime
+PAPER_EXTRA = {"A4": 0.0, "A3": 328.8}
+
+
+def printable_width(paper: str = "A4") -> float:
+    return PRINT_W + PAPER_EXTRA.get(paper, 0.0)
+
+
+WRITES_FILE = re.compile(r"^(WRITE|APPEND)[A-Z]*\s*\(")
 
 
 def _parse_source(source: str, figure_of: int | None, fig_size: tuple):
@@ -257,16 +270,23 @@ def _parse_source(source: str, figure_of: int | None, fig_size: tuple):
             if figure_of is None:
                 items.append(("plot", p))
             elif plot_no == figure_of:
-                p.size = (min(fig_size[0], PRINT_W - LEFT0), fig_size[1])
+                p.size = (fig_size[0], fig_size[1])
                 items.append(("figplot", p))
         else:
-            items.append(("row", [math_region(c) for c in split_top(s, ";")]))
+            cells = split_top(s, ";")
+            if figure_of is not None:
+                # лист для картинки пересчитывается, а запись в файл перезаписала
+                # бы результаты рабочего листа новой реализацией шума
+                cells = [c for c in cells if not WRITES_FILE.match(c.strip())]
+            if cells:
+                items.append(("row", [math_region(c) for c in cells]))
     return items
 
 
 def build_worksheet(source: str, figure_of: int | None = None,
-                    fig_size: tuple = (610.0, 340.0),
-                    measured: dict | None = None) -> tuple[str, list[dict]]:
+                    fig_size: tuple | None = None,
+                    measured: dict | None = None,
+                    paper: str = "A4") -> tuple[str, list[dict]]:
     """Returns (worksheet.xml, manifest) where manifest describes each region.
 
     `figure_of` builds a capture variant instead of the real worksheet:
@@ -275,6 +295,9 @@ def build_worksheet(source: str, figure_of: int | None = None,
     page -- which is exactly where Ctrl+End lands, so the figure can be
     screenshotted without hunting for it.
     """
+    print_w = printable_width(paper)
+    if fig_size is None:
+        fig_size = (print_w - LEFT0, 420.0 if paper == "A3" else 340.0)
     items = _parse_source(source, figure_of, fig_size)
 
     # Replace the width estimates with Prime's own measurements when a previous
@@ -301,7 +324,7 @@ def build_worksheet(source: str, figure_of: int | None = None,
             else:
                 col_w[i] = max(col_w[i], cell.width)
 
-    avail = PRINT_W - LEFT0
+    avail = print_w - LEFT0
     grid_total = sum(col_w) + COL_GAP * max(0, len(col_w) - 1)
     use_grid = grid_total <= avail
 
@@ -337,13 +360,13 @@ def build_worksheet(source: str, figure_of: int | None = None,
             h = textblock.height_for(payload)
             top = _place(top, h)
             xml, rel_id, part, data = textblock.region(
-                rid, payload, top, LEFT0, PRINT_W - LEFT0, len(parts) + 1)
+                rid, payload, top, LEFT0, print_w - LEFT0, len(parts) + 1)
             regions_xml.append(xml)
             parts[part] = data
             rels.append((rel_id, part))
             manifest.append({"region": rid, "kind": "text", "src": payload,
                              "top": top, "left": LEFT0,
-                             "width": PRINT_W - LEFT0, "height": h})
+                             "width": print_w - LEFT0, "height": h})
             rid += 1
             top += h + 14.0
             continue
@@ -367,42 +390,45 @@ def build_worksheet(source: str, figure_of: int | None = None,
             continue
 
         cells = payload
-        row_h = max(c.height for c in cells)
-        # Prime anchors a formula on its baseline, so fractions, powers and
-        # tall brackets stick out above `top`; reserve that overhang.
-        top = _place(top + max(0.0, row_h - BASE_H), row_h)
 
         if use_grid:
-            xs = [col_x[i] for i in range(len(cells))]
-            ws = [col_w[i] for i in range(len(cells))]
+            lines = [[(c, col_x[i], col_w[i]) for i, c in enumerate(cells)]]
         else:
-            # pack this row on its own, shrinking the gap if it would overflow
-            span = sum(c.width for c in cells)
-            gap = COL_GAP
-            if len(cells) > 1 and span + gap * (len(cells) - 1) > avail:
-                gap = max(10.0, (avail - span) / (len(cells) - 1))
-            xs, ws, x = [], [c.width for c in cells], LEFT0
+            # Разложить ряд по ширине листа, перенося лишние регионы на
+            # следующую строку: лист должен печататься целиком.
+            lines, cur, x = [], [], LEFT0
             for c in cells:
-                xs.append(x)
-                x += c.width + gap
+                if cur and x + c.width > LEFT0 + avail:
+                    lines.append(cur)
+                    cur, x = [], LEFT0
+                cur.append((c, x, c.width))
+                x += c.width + COL_GAP
+            if cur:
+                lines.append(cur)
 
-        for i, c in enumerate(cells):
-            regions_xml.append(
-                '<region region-id="%d" actualWidth="%s" actualHeight="%s" top="%s" left="%s">'
-                '<math resultRef="%d">%s%s</math></region>'
-                % (rid, round(ws[i], 2), c.height, top, round(xs[i], 2), rid, c.xml, RESFMT))
-            manifest.append({"region": rid, "kind": "math", "src": c.src,
-                             "top": top, "left": round(xs[i], 2),
-                             "width": round(ws[i], 2), "height": c.height})
-            rid += 1
-        end = xs[-1] + ws[-1]
-        if end > PRINT_W + LEFT0 + 1:
-            manifest[-1]["warning"] = "ряд шире страницы (%.0f), разбей строку" % end
-        top += row_h + row_gap
+        for line_cells in lines:
+            row_h = max(c.height for c, _, _ in line_cells)
+            # Prime anchors a formula on its baseline, so fractions, powers and
+            # tall brackets stick out above `top`; reserve that overhang.
+            top = _place(top + max(0.0, row_h - BASE_H), row_h)
+            for c, left, width in line_cells:
+                regions_xml.append(
+                    '<region region-id="%d" actualWidth="%s" actualHeight="%s" top="%s" left="%s">'
+                    '<math resultRef="%d">%s%s</math></region>'
+                    % (rid, round(width, 2), c.height, top, round(left, 2), rid, c.xml, RESFMT))
+                manifest.append({"region": rid, "kind": "math", "src": c.src,
+                                 "top": top, "left": round(left, 2),
+                                 "width": round(width, 2), "height": c.height})
+                rid += 1
+            end = line_cells[-1][1] + line_cells[-1][2]
+            if end > print_w + LEFT0 + 1:
+                manifest[-1]["warning"] = "регион шире страницы (%.0f)" % end
+            top += row_h + row_gap
 
     if pending_plot is not None:
         p = pending_plot
         ptop = top + 10.0
+        p.size = (p.size[0], max(220.0, min(p.size[1], VISIBLE_H - ptop)))
         regions_xml.append(plot_xml(rid, p, ptop, LEFT0))
         manifest.append({"region": rid, "kind": "plot", "src": p.src, "top": ptop,
                          "left": LEFT0, "width": p.size[0], "height": p.size[1],
