@@ -188,6 +188,8 @@ def parse_expr(src: str) -> Node:
 # AST -> XML
 # --------------------------------------------------------------------------
 OP_TAG = {"+": "plus", "-": "minus", "*": "mult", "/": "div", "^": "pow"}
+# Σ и Π: пишутся как sum(i, 0..N, тело) и prod(i, 1..N, тело)
+ITERATED = {"sum": "summation", "prod": "product"}
 
 
 def _id_xml(name: str, decl: bool = False, star: bool = False) -> str:
@@ -207,6 +209,15 @@ def to_xml(n: Node) -> str:
         return _id_xml(n.value)
     if k == "placeholder":
         return "<ml:placeholder />"
+    if k == "call" and n.value in ITERATED and len(n.args) == 3 and n.args[1].kind == "range":
+        # sum(i, 0..N, тело) -> оператор Σ с переменной, пределами и телом
+        var, rng, body = n.args
+        if var.kind != "id":
+            raise ValueError("первый аргумент %s это имя переменной" % n.value)
+        return ('<ml:apply><ml:%s /><ml:lambda><ml:boundVars>%s</ml:boundVars>%s</ml:lambda>'
+                '<ml:lowerBound>%s</ml:lowerBound><ml:upperBound>%s</ml:upperBound></ml:apply>'
+                % (ITERATED[n.value], _id_xml(var.value, decl=True), to_xml(body),
+                   to_xml(rng.args[0]), to_xml(rng.args[1])))
     if k == "call":
         inner = "".join(to_xml(a) for a in n.args)
         if len(n.args) != 1:
@@ -306,8 +317,18 @@ def from_xml(el) -> str:
             return "%s[%s]" % (from_xml(kids[1]), from_xml(kids[2]))
         if head == "absval":
             return "|%s|" % from_xml(kids[1])
+        if head == "scale":
+            return "%s*%s" % (from_xml(kids[1]), from_xml(kids[2]))
         if head == "neg":
             return "-%s" % from_xml(kids[1])
+        if head in ("summation", "product"):
+            lam = kids[1]
+            var = from_xml(list(lam[0])[0])
+            body = from_xml(list(lam)[1])
+            lo = from_xml(list(kids[2])[0])
+            hi = from_xml(list(kids[3])[0])
+            name = "sum" if head == "summation" else "prod"
+            return "%s(%s, %s..%s, %s)" % (name, var, lo, hi, body)
         if head in _TAG_OP:
             op = _TAG_OP[head]
             return "%s%s%s" % (from_xml(kids[1]), op, from_xml(kids[2]))

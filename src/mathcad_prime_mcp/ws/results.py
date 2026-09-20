@@ -30,6 +30,14 @@ def _fmt(v) -> str:
         return str(v)
     if isinstance(v, float):
         return "%.6g" % v
+    if isinstance(v, dict) and "rows" in v:
+        head = ", ".join(_fmt(x) for x in v["head"])
+        tail = ", ".join(_fmt(x) for x in v["tail"])
+        size = "%d×%d" % (v["rows"], v["cols"])
+        if v["min"] is None:
+            return "вектор %s" % size
+        return "вектор %s [%s ... %s], от %s до %s" % (
+            size, head, tail, _fmt(v["min"]), _fmt(v["max"]))
     return str(v)
 
 
@@ -48,13 +56,24 @@ def _parse_results(xml_text: str) -> dict:
                 kids = list(child)
                 if len(kids) == 1 and kids[0].tag == ML + "real":
                     entry["value"] = _f(kids[0].text)
+                elif kids and kids[0].tag == ML + "matrix":
+                    mx = kids[0]
+                    vals = [_f(e.text) for e in mx if e.tag == ML + "real"]
+                    entry["value"] = {"rows": int(mx.get("rows", 0)),
+                                      "cols": int(mx.get("cols", 0)),
+                                      "head": vals[:5], "tail": vals[-3:] if vals else [],
+                                      "min": min(vals) if vals else None,
+                                      "max": max(vals) if vals else None}
                 else:
                     entry["value"] = from_xml(kids[0]) if kids else None
             elif tag == "engineErrors":
                 errs = []
                 for e in child:
-                    msg = e.findtext("resource-string") or ""
-                    code = e.findtext("errorCode") or ""
+                    # дети лежат в пространстве имён result10, искать по голому
+                    # имени нельзя
+                    kids = {c.tag.split("}")[-1]: (c.text or "") for c in e}
+                    msg = kids.get("resource-string", "")
+                    code = kids.get("errorCode", "")
                     errs.append({"code": code.split("\t")[0], "text": msg.strip(),
                                  "derived": e.get("previous-error-id") is not None})
                 entry["errors"] = errs
@@ -68,6 +87,42 @@ def _parse_results(xml_text: str) -> dict:
                     "y": [_f(res.get("Min")), _f(res.get("Max"))] if res is not None else None,
                 }
         out[int(rid)] = entry
+    return out
+
+
+def text_blocks(path: str) -> dict:
+    """{item-idref: текст} для всех текстовых блоков документа.
+
+    Содержимое лежит не в worksheet.xml, а в отдельных частях-архивах,
+    на которые ссылается worksheet.xml.rels.
+    """
+    import io
+    import re
+    import zipfile
+
+    rels = read_part(path, "mathcad/_rels/worksheet.xml.rels")
+    if not rels:
+        return {}
+    out = {}
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        for m in re.finditer(r"<Relationship\b[^>]*>", rels):
+            tag = m.group(0)
+            tid = re.search(r'Id="([^"]+)"', tag)
+            tgt = re.search(r'Target="([^"]+)"', tag)
+            if not tid or not tgt:
+                continue
+            part = tgt.group(1).lstrip("/")
+            if part not in names:
+                continue
+            try:
+                inner = zipfile.ZipFile(io.BytesIO(z.read(part)))
+                xaml = inner.read("Xaml/Document.xaml").decode("utf-8")
+            except Exception:
+                continue
+            runs = re.findall(r"<Run[^>]*>(.*?)</Run>", xaml, re.S)
+            text = "".join(runs).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            out[tid.group(1)] = text.strip()
     return out
 
 
@@ -91,6 +146,7 @@ def _parse_worksheet(xml_text: str) -> list[dict]:
         text = reg.find(WS + "text") or reg.find("text")
         if text is not None:
             out.append({"region": rid, "kind": "text",
+                        "ref_id": text.get("item-idref", ""),
                         "top": _f(reg.get("top")), "left": _f(reg.get("left"))})
         elif math is not None:
             body = [c for c in math if c.tag.startswith(ML)]
@@ -130,11 +186,13 @@ def inspect(path: str) -> dict:
     results = _parse_results(res_xml) if res_xml else {}
 
     regions = _parse_worksheet(ws_xml)
+    texts = text_blocks(path)
     errors, warnings, rows = [], [], []
 
     for r in regions:
         if r["kind"] == "text":
-            rows.append({"region": r["region"], "kind": "text"})
+            rows.append({"region": r["region"], "kind": "text",
+                         "text": texts.get(r.get("ref_id", ""), "")})
         elif r["kind"] == "math":
             info = results.get(r["ref"], {})
             row = {"region": r["region"], "text": r["text"]}
@@ -246,7 +304,7 @@ def as_text(report: dict) -> str:
     lines = []
     for row in report["rows"]:
         if row.get("kind") == "text":
-            lines.append("%3s  [текстовый блок]" % row["region"])
+            lines.append("%3s  # %s" % (row["region"], row.get("text") or "текстовый блок"))
             continue
         if row.get("kind") == "plot":
             rng = "; ".join("x[%s..%s] y[%s..%s]"

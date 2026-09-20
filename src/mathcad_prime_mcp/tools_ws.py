@@ -21,6 +21,7 @@ SOURCE_HELP = """Формат исходника (строка = ряд реги
     @gap 40                                     # дополнительный отступ
 
 Выражения: + - * / ^, |x| модуль, f(a,b) вызов, X[i] индекс, a..b диапазон.
+Суммы и произведения: sum(k, 0..N-1, x[k]*y[n-k]), prod(i, 1..N, i).
 Греческие имена по ASCII-псевдонимам: Phi (Хевисайд), pi, sigma, omega, Delta.
 Слева от ':=' допустимо имя, X[i] или f(x). Ряды позиционируются сами и не
 разрываются границей страницы."""
@@ -109,6 +110,34 @@ def register(mcp, get_app):
         return {"region": region, "traces": out}
 
     @mcp.tool()
+    def mathcad_report(source: str, out_docx: str, pdf: bool = False,
+                       base_dir: str = "") -> dict:
+        """Собрать отчёт по лабораторной из markdown в .docx по ГОСТ.
+
+        Times New Roman 14, полуторный интервал, поля 30/15/20/20 мм,
+        титульный лист из front matter, картинки масштабируются по ширине
+        страницы сами. Разметка сверх markdown: `$$формула$$` отдельной
+        строкой по центру, `![подпись](file.png)` картинка с подписью,
+        `X_{i}` и `10^{5}` подстрочный и надстрочный, `\\newpage` разрыв.
+
+        source это текст или путь к .md. Пути картинок считаются от base_dir
+        (по умолчанию папка отчёта).
+        """
+        from .ws import report
+
+        text = source
+        if "\n" not in source and source.lower().endswith(".md") and os.path.exists(source):
+            with open(source, encoding="utf-8") as fh:
+                text = fh.read()
+            base_dir = base_dir or os.path.dirname(os.path.abspath(source))
+
+        path = report.render(text, out_docx, base_dir=base_dir)
+        out = {"docx": path}
+        if pdf:
+            out["pdf"] = report.to_pdf(path)
+        return out
+
+    @mcp.tool()
     def mathcad_cheatsheet(source: str, path: str, out_md: str,
                            title: str = "Шпаргалка к защите") -> dict:
         """Собрать памятку к защите: каждая формула листа с её значением и
@@ -146,7 +175,7 @@ def register(mcp, get_app):
                 piece += " = **%s**" % results._fmt(row["value"])
             expl = notes.get(name) or notes.get(name.split("[")[0])
             if expl:
-                piece += "  — %s" % expl
+                piece += ":  %s" % expl
             lines.append(piece)
 
         unused = [k for k in order if k not in
