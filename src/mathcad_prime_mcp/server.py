@@ -43,6 +43,24 @@ def _running_mathcad_pids() -> set[int]:
     return {p.pid for p in psutil.process_iter(["name"]) if p.info["name"] == "MathcadPrime.exe"}
 
 
+def _reset_gen_cache() -> None:
+    import shutil
+
+    import win32com
+    from win32com.client import gencache
+
+    root = win32com.__gen_path__
+    for name in os.listdir(root) if os.path.isdir(root) else []:
+        path = os.path.join(root, name)
+        if os.path.isdir(path) and not os.path.exists(os.path.join(path, "__init__.py")):
+            shutil.rmtree(path, ignore_errors=True)
+    try:
+        os.remove(os.path.join(root, "dicts.dat"))
+    except OSError:
+        pass
+    gencache.Rebuild()
+
+
 def _get_app() -> Any:
     global _app, _owned_pid, _probed_ownership
     _ensure_com()
@@ -55,7 +73,14 @@ def _get_app() -> Any:
     try:
         app = win32com.client.gencache.EnsureDispatch("MathcadPrime.Application")
     except Exception:
-        app = win32com.client.Dispatch("MathcadPrime.Application")
+        # Кэш типов pywin32 по умолчанию лежит во временной папке. Если её
+        # почистили, от сгенерированного модуля остаётся пустой каталог и любой
+        # Dispatch падает с AttributeError. Сносим кэш и генерируем заново.
+        _reset_gen_cache()
+        try:
+            app = win32com.client.gencache.EnsureDispatch("MathcadPrime.Application")
+        except Exception:
+            app = win32com.client.Dispatch("MathcadPrime.Application")
     pids_after_probe = _running_mathcad_pids()
     if not (pids_after_probe - pids_before):
         # Prime was already running with the user's own windows: leave it alone.
